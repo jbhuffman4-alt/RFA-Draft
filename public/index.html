@@ -262,6 +262,9 @@ socket.on('owner_accept_expired', () => {
   .accept-modal-card h2 { font-size: 18px; font-weight: 700; color: #3fb950; margin-bottom: 8px; }
   .accept-modal-card p { font-size: 14px; color: #8b949e; margin-bottom: 1rem; line-height: 1.5; }
   .accept-modal-amount { font-size: 36px; font-weight: 700; color: #3fb950; margin-bottom: 10px; }
+
+  .plus-btn { background: #1f6feb; padding: 10px 14px; font-size: 14px; font-weight: 700; flex-shrink: 0; }
+  .plus-btn:hover { background: #388bfd; }
 </style>
 </head>
 <body>
@@ -338,6 +341,7 @@ socket.on('owner_accept_expired', () => {
           <div class="timer-bar"><div class="timer-fill" id="timer-fill" style="width:100%"></div></div>
           <div class="max-bid-info" id="max-bid-info"></div>
           <div class="bid-controls">
+            <button class="bid-btn plus-btn" id="plus-btn" onclick="placePlusOne()">+$1</button>
             <input class="bid-input" id="bid-input" type="number" min="1" placeholder="Enter bid $" />
             <button class="bid-btn" id="bid-button" onclick="placeBid()">Bid</button>
           </div>
@@ -632,7 +636,7 @@ socket.on('bid_placed', (data) => {
   document.getElementById('current-bid-display').textContent = '$' + data.amount;
   document.getElementById('current-bidder-display').innerHTML = `High bidder: <strong>${data.team}</strong>`;
   renderBidHistory(data.bidHistory);
-  if (state) state.budgets = data.budgets;
+  if (state) { state.budgets = data.budgets; state.curBid = data.amount; state.curBidder = data.team; }
   renderTeams(state);
 });
 
@@ -827,6 +831,12 @@ function placeBid() {
   document.getElementById('bid-error').textContent = '';
   socket.emit('bid', amt);
   document.getElementById('bid-input').value = '';
+}
+function placePlusOne() {
+  if (!state || !state.cur) return;
+  const nextBid = (state.curBid || state.cur.basePrice) + 1;
+  document.getElementById('bid-error').textContent = '';
+  socket.emit('bid', nextBid);
 }
 
 function confirmRaise() {
