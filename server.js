@@ -9,7 +9,6 @@ const io = new Server(server);
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ─── TEAM DATA ───────────────────────────────────────────────────────────────
 const TEAM_DATA = {
   'Smash':{budget:187,spots:8,commissioner:true,players:[
     {name:'Trevor Lawrence',price:4},{name:'Josh Allen',price:40},{name:'Jaxon Smith-Njigba',price:4}
@@ -72,13 +71,19 @@ const POS = {
   'Jaxon Smith-Njigba':'WR','Jakobi Meyers':'WR','Jake Ferguson':'TE'
 };
 
-// ─── SERVER STATE ─────────────────────────────────────────────────────────────
 function buildAllPlayers() {
   const arr = [];
   Object.entries(TEAM_DATA).forEach(([t,d]) => d.players.forEach(p => {
-    arr.push({name:p.name, basePrice:p.price, owner:t, pos:POS[p.name]||'WR', nfl:NFL_TEAMS[p.name]||'NFL'});
+    arr.push({name:p.name,basePrice:p.price,owner:t,pos:POS[p.name]||'WR',nfl:NFL_TEAMS[p.name]||'NFL'});
   }));
   return arr;
+}
+
+function getSnakeTeam(nomOrder, nomIdx) {
+  const n = nomOrder.length;
+  const round = Math.floor(nomIdx / n);
+  const posInRound = nomIdx % n;
+  return round % 2 === 0 ? nomOrder[posInRound] : nomOrder[n - 1 - posInRound];
 }
 
 function freshState() {
@@ -89,22 +94,14 @@ function freshState() {
     acquired[t] = [];
   });
   return {
-    started: false,
-    paused: false,
+    started: false, paused: false,
     queue: buildAllPlayers(),
-    nomOrder: [],
-    nomIdx: 0,
-    cur: null,
-    curBid: 0,
-    curBidder: null,
-    bidHistory: [],
-    phase: 'idle', // idle | bidding | raise | match | done
-    timerSec: 30,
-    timerMax: 30,
-    completed: [],
-    budgets,
-    spots,
-    acquired
+    nomOrder: [], nomIdx: 0,
+    cur: null, curBid: 0, curBidder: null, bidHistory: [],
+    phase: 'idle',
+    timerSec: 30, timerMax: 30,
+    lastBidTime: null,
+    completed: [], budgets, spots, acquired
   };
 }
 
@@ -113,59 +110,56 @@ let draftHistory = [];
 let timerInterval = null;
 let connectedUsers = {}; // socketId -> teamName
 
-function spotsLeft(t) { return G.spots[t] - G.acquired[t].length; }
+// How much a team can spend on a single player:
+// budget - (spotsRemaining - 1) because they need $1 for each other empty spot
+// But if they're matching their OWN player, they don't use a new spot, so cap is just their budget
+function maxBid(team, isOwnerMatch = false) {
+  const budget = G.budgets[team];
+  const openSpots = G.spots[team] - G.acquired[team].length;
+  if (isOwnerMatch) return budget; // matching keeps existing spot, no new spot needed
+  const mustKeep = Math.max(0, openSpots - 1); // $1 reserved for each other open spot
+  return budget - mustKeep;
+}
 
+function spotsLeft(t) { return G.spots[t] - G.acquired[t].length; }
 function broadcast(event, data) { io.emit(event, data); }
 
 function getPublicState() {
   return {
-    started: G.started,
-    paused: G.paused,
-    queue: G.queue,
-    nomOrder: G.nomOrder,
-    nomIdx: G.nomIdx,
-    cur: G.cur,
-    curBid: G.curBid,
-    curBidder: G.curBidder,
-    bidHistory: G.bidHistory,
-    phase: G.phase,
-    timerSec: G.timerSec,
-    timerMax: G.timerMax,
-    completed: G.completed,
-    budgets: G.budgets,
-    spots: G.spots,
-    acquired: G.acquired,
+    started: G.started, paused: G.paused,
+    queue: G.queue, nomOrder: G.nomOrder, nomIdx: G.nomIdx,
+    cur: G.cur, curBid: G.curBid, curBidder: G.curBidder, bidHistory: G.bidHistory,
+    phase: G.phase, timerSec: G.timerSec, timerMax: G.timerMax,
+    completed: G.completed, budgets: G.budgets, spots: G.spots, acquired: G.acquired,
     connectedUsers: Object.values(connectedUsers)
   };
 }
 
-// ─── TIMER ───────────────────────────────────────────────────────────────────
 function stopTimer() {
   if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
 }
 
 function startTimer(seconds, onEnd) {
   stopTimer();
-  G.timerSec = seconds;
-  G.timerMax = seconds;
-  broadcast('timer_tick', { timerSec: G.timerSec, timerMax: G.timerMax, phase: G.phase });
+  G.timerSec = seconds; G.timerMax = seconds;
+  G.lastBidTime = Date.now();
+  broadcast('timer_tick', { timerSec: G.timerSec, timerMax: G.timerMax, phase: G.phase, accelerated: false });
   timerInterval = setInterval(() => {
     if (G.paused) return;
-    G.timerSec--;
-    broadcast('timer_tick', { timerSec: G.timerSec, timerMax: G.timerMax, phase: G.phase });
-    if (G.timerSec <= 0) {
-      stopTimer();
-      onEnd();
-    }
+    const sinceLastBid = (Date.now() - (G.lastBidTime || Date.now())) / 1000;
+    const accelerated = G.phase === 'bidding' && sinceLastBid >= 10 && G.timerSec > 0;
+    G.timerSec -= accelerated ? 2 : 1;
+    if (G.timerSec < 0) G.timerSec = 0;
+    broadcast('timer_tick', { timerSec: G.timerSec, timerMax: G.timerMax, phase: G.phase, accelerated });
+    if (G.timerSec <= 0) { stopTimer(); onEnd(); }
   }, 1000);
 }
 
-// ─── DRAFT FLOW ───────────────────────────────────────────────────────────────
 function promptNomination() {
   stopTimer();
   G.cur = null; G.curBid = 0; G.curBidder = null; G.bidHistory = [];
   G.phase = 'idle';
-  const nomTeam = G.nomOrder[G.nomIdx % G.nomOrder.length];
+  const nomTeam = getSnakeTeam(G.nomOrder, G.nomIdx);
   broadcast('prompt_nomination', { nomTeam, queue: G.queue, state: getPublicState() });
 }
 
@@ -175,6 +169,7 @@ function startAuction(player, nominatedBy) {
   G.curBidder = null;
   G.bidHistory = [];
   G.phase = 'bidding';
+  G.lastBidTime = Date.now();
   G.queue = G.queue.filter(p => p.name !== player.name);
   broadcast('auction_start', { player, nominatedBy, state: getPublicState() });
   startTimer(30, endBidding);
@@ -182,26 +177,42 @@ function startAuction(player, nominatedBy) {
 
 function endBidding() {
   if (!G.cur) return;
-  if (!G.curBidder) { finalizePlayer(G.cur, null, 0); return; }
+  const p = G.cur;
+
+  // No bids placed — give owner the option to accept at base price
+  if (!G.curBidder) {
+    G.phase = 'owner_accept';
+    broadcast('owner_accept_phase', { cur: p, basePrice: p.basePrice, state: getPublicState() });
+    startTimer(30, () => {
+      broadcast('owner_accept_expired', {});
+      finalizePlayer(p, null, 0);
+    });
+    return;
+  }
+
+  // Bids were placed — go to raise phase
   startRaisePhase();
 }
 
 function startRaisePhase() {
   G.phase = 'raise';
   broadcast('raise_phase', { curBid: G.curBid, curBidder: G.curBidder, state: getPublicState() });
-  startTimer(15, () => {
-    broadcast('raise_expired', {});
-    proceedToOwnerDecision();
-  });
+  startTimer(15, () => { broadcast('raise_expired', {}); proceedToOwnerDecision(); });
 }
 
 function proceedToOwnerDecision() {
   G.phase = 'match';
-  broadcast('match_phase', { cur: G.cur, curBid: G.curBid, curBidder: G.curBidder, state: getPublicState() });
-  startTimer(30, () => {
-    broadcast('match_expired', {});
+  // Check if owner can actually afford to match
+  const owner = G.cur.owner;
+  const canAfford = G.budgets[owner] >= G.curBid;
+  if (!canAfford) {
+    // Owner can't afford it — auto-pass to bidder
+    broadcast('match_auto_passed', { reason: `${owner} can't afford $${G.curBid}`, cur: G.cur, curBid: G.curBid, curBidder: G.curBidder });
     finalizePlayer(G.cur, G.curBidder, G.curBid);
-  });
+    return;
+  }
+  broadcast('match_phase', { cur: G.cur, curBid: G.curBid, curBidder: G.curBidder, state: getPublicState() });
+  startTimer(30, () => { broadcast('match_expired', {}); finalizePlayer(G.cur, G.curBidder, G.curBid); });
 }
 
 function finalizePlayer(player, winner, amount) {
@@ -217,10 +228,8 @@ function finalizePlayer(player, winner, amount) {
   G.phase = 'idle';
   if (G.queue.length === 0) {
     G.phase = 'done';
-    // Save to history
     draftHistory.push({
-      id: Date.now(),
-      date: new Date().toLocaleString(),
+      id: Date.now(), date: new Date().toLocaleString(),
       completed: [...G.completed],
       acquired: JSON.parse(JSON.stringify(G.acquired)),
       budgets: { ...G.budgets }
@@ -232,26 +241,25 @@ function finalizePlayer(player, winner, amount) {
   promptNomination();
 }
 
-// ─── SOCKET EVENTS ────────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
-  console.log('Client connected:', socket.id);
-
   socket.on('login', (teamName) => {
     connectedUsers[socket.id] = teamName;
     socket.emit('login_ok', {
-      team: teamName,
-      teamData: TEAM_DATA[teamName],
-      state: getPublicState(),
-      history: draftHistory
+      team: teamName, teamData: TEAM_DATA[teamName],
+      state: getPublicState(), history: draftHistory
     });
     broadcast('users_update', Object.values(connectedUsers));
-    console.log(`${teamName} logged in`);
+  });
+
+  // Resync on mobile tab return
+  socket.on('resync', (teamName) => {
+    if (teamName) connectedUsers[socket.id] = teamName;
+    socket.emit('resync_ok', { state: getPublicState(), history: draftHistory });
   });
 
   socket.on('start_draft', () => {
     if (!G.started) {
-      const teams = Object.keys(TEAM_DATA);
-      G.nomOrder = teams.sort(() => Math.random() - 0.5);
+      G.nomOrder = Object.keys(TEAM_DATA).sort(() => Math.random() - 0.5);
       G.started = true;
       broadcast('draft_started', { state: getPublicState() });
       promptNomination();
@@ -260,7 +268,7 @@ io.on('connection', (socket) => {
 
   socket.on('nominate', (playerName) => {
     const team = connectedUsers[socket.id];
-    const nomTeam = G.nomOrder[G.nomIdx % G.nomOrder.length];
+    const nomTeam = getSnakeTeam(G.nomOrder, G.nomIdx);
     if (team !== nomTeam) return;
     const player = G.queue.find(p => p.name === playerName);
     if (!player) return;
@@ -271,15 +279,19 @@ io.on('connection', (socket) => {
     if (G.phase !== 'bidding') return;
     const team = connectedUsers[socket.id];
     if (!team || !G.cur) return;
-    if (G.cur.owner === team) return;
+    if (G.cur.owner === team) { socket.emit('bid_error', "You can't bid on your own player."); return; }
     if (spotsLeft(team) <= 0) { socket.emit('bid_error', 'No roster spots left!'); return; }
     if (isNaN(amount) || amount < G.cur.basePrice) { socket.emit('bid_error', `Min bid is $${G.cur.basePrice}`); return; }
     if (G.curBidder && amount <= G.curBid) { socket.emit('bid_error', `Must beat $${G.curBid}`); return; }
-    if (amount > G.budgets[team]) { socket.emit('bid_error', `Not enough budget ($${G.budgets[team]} left)`); return; }
-    G.curBid = amount;
-    G.curBidder = team;
+    const cap = maxBid(team, false);
+    if (amount > cap) {
+      const reserved = spotsLeft(team) - 1;
+      socket.emit('bid_error', `Max bid is $${cap} (need $1 for each of your ${reserved} other open spot${reserved !== 1 ? 's' : ''})`);
+      return;
+    }
+    G.curBid = amount; G.curBidder = team;
     G.bidHistory.unshift({ team, amount });
-    // Add 5 seconds
+    G.lastBidTime = Date.now();
     G.timerSec = Math.min(G.timerSec + 5, 60);
     G.timerMax = Math.max(G.timerMax, G.timerSec);
     broadcast('bid_placed', { team, amount, timerSec: G.timerSec, timerMax: G.timerMax, bidHistory: G.bidHistory, budgets: G.budgets });
@@ -290,7 +302,11 @@ io.on('connection', (socket) => {
     const team = connectedUsers[socket.id];
     if (team !== G.curBidder) return;
     if (isNaN(amount) || amount <= G.curBid) { socket.emit('bid_error', `Must be higher than $${G.curBid}`); return; }
-    if (amount > G.budgets[team]) { socket.emit('bid_error', `Not enough budget`); return; }
+    const cap = maxBid(team, false);
+    if (amount > cap) {
+      socket.emit('bid_error', `Max bid is $${cap}`);
+      return;
+    }
     stopTimer();
     G.curBid = amount;
     G.bidHistory.unshift({ team, amount, raise: true });
@@ -310,11 +326,19 @@ io.on('connection', (socket) => {
     if (G.phase !== 'match') return;
     const team = connectedUsers[socket.id];
     if (team !== G.cur.owner) return;
+    if (match) {
+      // Double-check they can afford it
+      if (G.budgets[team] < G.curBid) {
+        socket.emit('bid_error', `You can't afford $${G.curBid}. Auto-passing.`);
+        stopTimer();
+        finalizePlayer(G.cur, G.curBidder, G.curBid);
+        return;
+      }
+    }
     stopTimer();
     finalizePlayer(G.cur, match ? G.cur.owner : G.curBidder, G.curBid);
   });
 
-  // Commissioner controls
   socket.on('comm_pause', () => { G.paused = true; broadcast('paused', {}); });
   socket.on('comm_resume', () => { G.paused = false; broadcast('resumed', {}); });
   socket.on('comm_skip', () => {
@@ -328,24 +352,37 @@ io.on('connection', (socket) => {
     if (!TEAM_DATA[team]) return;
     G.curBid = amount; G.curBidder = team;
     G.bidHistory.unshift({ team, amount });
+    G.lastBidTime = Date.now();
     broadcast('bid_placed', { team, amount, timerSec: G.timerSec, timerMax: G.timerMax, bidHistory: G.bidHistory, budgets: G.budgets });
   });
-
   socket.on('reset_draft', () => {
     const team = connectedUsers[socket.id];
     if (!TEAM_DATA[team]?.commissioner) return;
-    stopTimer();
-    G = freshState();
+    stopTimer(); G = freshState();
     broadcast('draft_reset', { state: getPublicState(), history: draftHistory });
   });
 
   socket.on('disconnect', () => {
-    const team = connectedUsers[socket.id];
     delete connectedUsers[socket.id];
     broadcast('users_update', Object.values(connectedUsers));
-    console.log(`${team || socket.id} disconnected`);
   });
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`RFA Draft server running on port ${PORT}`));
+
+// Injected patch — owner accept handler
+// (finds the io.on block and adds the event inside it via a separate listener)
+io.on('connection', (socket2) => {
+  socket2.on('owner_accept_decision', (accept) => {
+    if (G.phase !== 'owner_accept') return;
+    const team = connectedUsers[socket2.id];
+    if (team !== G.cur.owner) return;
+    stopTimer();
+    if (accept) {
+      finalizePlayer(G.cur, G.cur.owner, G.cur.basePrice);
+    } else {
+      finalizePlayer(G.cur, null, 0);
+    }
+  });
+});
