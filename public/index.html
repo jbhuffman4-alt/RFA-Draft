@@ -4,12 +4,31 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RFA Draft 2025</title>
-<script src="/socket.io/socket.io.js"></script>
+<script src="/socket.io/socket.io.js">
+socket.on('owner_accept_phase', (data) => {
+  state = data.state;
+  setBanner('match', '🔒 Owner Accept / Release Decision');
+  document.getElementById('bid-section').style.display = 'none';
+  renderPlayerBlock(data.cur);
+  showGlobalBar('match', data.cur.owner);
+  if (myTeam === data.cur.owner) {
+    document.getElementById('owner-accept-desc').textContent = 'Nobody bid on your player. Accept them at their base contract price or release them to Not Signed.';
+    document.getElementById('owner-accept-price').textContent = '$' + data.basePrice;
+    document.getElementById('owner-accept-modal').style.display = 'flex';
+    document.getElementById('owner-accept-countdown').textContent = '30';
+    document.getElementById('owner-accept-fill').style.width = '100%';
+  } else {
+    document.getElementById('player-on-block').innerHTML = `<div class="no-player-up"><div>🔒 No bids — <strong>${data.cur.owner}</strong> deciding whether to keep at base price ($${data.basePrice})</div></div>`;
+  }
+});
+socket.on('owner_accept_expired', () => {
+  document.getElementById('owner-accept-modal').style.display = 'none';
+  hideGlobalBar();
+});
+</script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: system-ui, sans-serif; background: #0d1117; color: #e6edf3; min-height: 100vh; }
-
-  /* LOGIN */
   #login-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; }
   .login-card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 2rem; width: 340px; }
   .login-logo { display: flex; align-items: center; gap: 10px; margin-bottom: 1.5rem; }
@@ -22,8 +41,6 @@
   .login-btn { width: 100%; background: #238636; border: none; border-radius: 8px; padding: 10px; color: #fff; font-size: 14px; font-weight: 500; cursor: pointer; }
   .login-btn:hover { background: #2ea043; }
   .login-error { color: #f85149; font-size: 13px; margin-top: 8px; display: none; }
-
-  /* PREDRAFT */
   #predraft-screen { display: none; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; text-align: center; padding: 2rem; }
   .predraft-logo { font-size: 22px; font-weight: 700; color: #2ea043; margin-bottom: 6px; }
   .predraft-sub { font-size: 14px; color: #8b949e; margin-bottom: 1.5rem; }
@@ -39,8 +56,6 @@
   .online-list { font-size: 13px; color: #8b949e; margin-top: 8px; }
   .history-btn { background: #21262d; border: 1px solid #30363d; border-radius: 8px; padding: 8px 20px; color: #e6edf3; font-size: 13px; cursor: pointer; margin-top: 8px; }
   .history-btn:hover { background: #30363d; }
-
-  /* APP */
   #app { display: none; flex-direction: column; min-height: 100vh; }
   .topbar { background: #161b22; border-bottom: 1px solid #30363d; padding: 0 1rem; height: 52px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
   .topbar-left { display: flex; align-items: center; gap: 12px; }
@@ -71,16 +86,22 @@
   .timer-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
   .timer-countdown { font-size: 32px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .timer-countdown.urgent { color: #f85149; animation: pulse 0.5s ease-in-out infinite; }
+  .timer-countdown.accelerated { color: #f0883e; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
   .timer-label { font-size: 12px; color: #8b949e; }
+  .accel-badge { display: none; font-size: 10px; font-weight: 700; background: #3a2a0a; color: #f0883e; border: 1px solid #f0883e; border-radius: 4px; padding: 1px 6px; margin-top: 2px; }
+  .accel-badge.show { display: inline-block; }
   .timer-bar { height: 6px; background: #21262d; border-radius: 3px; overflow: hidden; margin-bottom: 12px; }
-  .timer-fill { height: 100%; border-radius: 3px; transition: width 1s linear; background: #2ea043; }
+  .timer-fill { height: 100%; border-radius: 3px; transition: width 0.9s linear; background: #2ea043; }
   .timer-fill.urgent { background: #f85149; }
+  .timer-fill.accelerated { background: #f0883e; }
   .timer-fill.raise { background: #1f6feb; }
   .timer-fill.match { background: #f0883e; }
   .current-bid-amount { font-size: 30px; font-weight: 700; color: #3fb950; font-variant-numeric: tabular-nums; }
   .current-bidder { font-size: 13px; color: #8b949e; }
   .current-bidder strong { color: #e6edf3; }
+  .max-bid-info { font-size: 11px; color: #8b949e; margin-top: 4px; }
+  .max-bid-info span { color: #f0883e; font-weight: 600; }
   .bid-controls { display: flex; gap: 8px; margin-top: 10px; }
   .bid-input { flex: 1; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 10px 14px; color: #e6edf3; font-size: 16px; font-weight: 600; outline: none; }
   .bid-input:focus { border-color: #388bfd; }
@@ -117,6 +138,18 @@
   .nominate-btn { width: 100%; background: #1f6feb; border: none; border-radius: 8px; padding: 7px; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
   .nominate-btn:hover { background: #388bfd; }
   .nominate-btn:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
+  .draft-order-section { padding: 8px 12px; border-bottom: 1px solid #30363d; flex-shrink: 0; }
+  .draft-order-section h3 { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  .draft-order-list { display: flex; flex-direction: column; gap: 2px; }
+  .draft-order-item { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 4px; font-size: 12px; }
+  .draft-order-item.current { background: #0f2d0f; border: 1px solid #238636; }
+  .draft-order-item.next { background: #1a1a2e; border: 1px solid #30363d; }
+  .draft-order-num { font-size: 10px; color: #8b949e; width: 16px; flex-shrink: 0; }
+  .draft-order-name { flex: 1; font-weight: 500; }
+  .draft-order-badge { font-size: 9px; padding: 1px 5px; border-radius: 3px; font-weight: 600; }
+  .draft-order-badge.now { background: #238636; color: #fff; }
+  .draft-order-badge.next { background: #388bfd; color: #fff; }
+  .round-label { font-size: 10px; color: #8b949e; padding: 2px 6px; text-transform: uppercase; letter-spacing: 0.5px; }
   .queue-section { display: flex; flex-direction: column; flex: 1; min-height: 0; border-bottom: 1px solid #30363d; }
   .queue-header { padding: 6px 12px 0; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; }
   .queue-header h3 { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
@@ -138,14 +171,14 @@
   .tabs { display: flex; border-bottom: 1px solid #30363d; }
   .tab { padding: 5px 10px; font-size: 11px; color: #8b949e; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
   .tab.active { color: #e6edf3; border-bottom-color: #2ea043; }
-  .teams-section { padding: 6px 10px; overflow-y: auto; max-height: 110px; }
+  .teams-section { padding: 6px 10px; overflow-y: auto; max-height: 100px; }
   .team-row { display: flex; align-items: center; justify-content: space-between; padding: 3px 6px; border-radius: 4px; margin-bottom: 1px; }
   .team-row.active-bidder { background: #0f2d0f; border: 1px solid #238636; }
   .team-row.is-owner { background: #1a1a2e; border: 1px solid #388bfd; }
   .team-row-name { font-size: 11px; flex: 1; }
   .team-row-budget { font-size: 11px; color: #3fb950; font-weight: 600; margin-right: 4px; }
   .team-row-spots { font-size: 10px; color: #79c0ff; }
-  .completed-section { padding: 6px 10px; overflow-y: auto; max-height: 110px; }
+  .completed-section { padding: 6px 10px; overflow-y: auto; max-height: 100px; }
   .completed-item { display: flex; align-items: center; justify-content: space-between; padding: 3px 6px; background: #161b22; border: 1px solid #30363d; border-radius: 4px; margin-bottom: 2px; }
   .completed-player { font-size: 11px; font-weight: 500; }
   .completed-result { font-size: 11px; }
@@ -158,11 +191,6 @@
   .comm-btn:hover { background: #30363d; }
   .comm-btn.danger { border-color: #f85149; color: #f85149; }
   .comm-btn.reset { border-color: #f0883e; color: #f0883e; }
-  .no-player-up { display: flex; align-items: center; justify-content: center; padding: 2.5rem; color: #8b949e; font-size: 14px; text-align: center; flex-direction: column; gap: 6px; }
-  .ping { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #2ea043; animation: ping 1.5s ease-in-out infinite; margin-right: 6px; vertical-align: middle; }
-  @keyframes ping { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(1.3)} }
-
-  /* MODALS */
   .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.78); z-index: 200; display: flex; align-items: center; justify-content: center; }
   .modal-card { background: #161b22; border: 1px solid #30363d; border-radius: 16px; padding: 2rem; width: 380px; text-align: center; }
   .modal-card h2 { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
@@ -190,8 +218,7 @@
   .raise-err { color: #f85149; font-size: 12px; margin-bottom: 6px; min-height: 16px; }
   .raise-pass-btn { width: 100%; background: transparent; border: 1px solid #30363d; border-radius: 8px; padding: 8px; color: #8b949e; font-size: 13px; cursor: pointer; margin-top: 4px; }
   .raise-pass-btn:hover { background: #21262d; }
-
-  /* NOM PICKER */
+  .no-player-up { display: flex; align-items: center; justify-content: center; padding: 2.5rem; color: #8b949e; font-size: 14px; text-align: center; flex-direction: column; gap: 6px; }
   .nom-picker { position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 300; display: flex; align-items: center; justify-content: center; }
   .nom-picker-card { background: #161b22; border: 1px solid #30363d; border-radius: 14px; width: 500px; max-height: 80vh; display: flex; flex-direction: column; }
   .nom-picker-header { padding: 14px 16px; border-bottom: 1px solid #30363d; }
@@ -211,8 +238,6 @@
   .nom-picker-price { font-size: 13px; color: #3fb950; font-weight: 600; }
   .nom-picker-cancel { padding: 10px 16px; border-top: 1px solid #30363d; }
   .nom-picker-cancel button { width: 100%; background: #21262d; border: 1px solid #30363d; border-radius: 7px; padding: 8px; color: #8b949e; font-size: 13px; cursor: pointer; }
-
-  /* HISTORY MODAL */
   .history-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 400; display: none; align-items: center; justify-content: center; }
   .history-overlay.show { display: flex; }
   .history-card { background: #161b22; border: 1px solid #30363d; border-radius: 16px; width: 600px; max-height: 85vh; display: flex; flex-direction: column; }
@@ -229,13 +254,18 @@
   .history-result-winner { color: #3fb950; font-weight: 500; }
   .history-result-ns { color: #8b949e; }
   .history-empty { color: #8b949e; font-size: 13px; text-align: center; padding: 2rem; }
-
+  .ping { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #2ea043; animation: ping 1.5s ease-in-out infinite; margin-right: 6px; vertical-align: middle; }
+  @keyframes ping { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(1.3)} }
   ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 2px; }
+
+  .accept-modal-card { background: #161b22; border: 2px solid #3fb950; border-radius: 16px; padding: 2rem; width: 380px; text-align: center; }
+  .accept-modal-card h2 { font-size: 18px; font-weight: 700; color: #3fb950; margin-bottom: 8px; }
+  .accept-modal-card p { font-size: 14px; color: #8b949e; margin-bottom: 1rem; line-height: 1.5; }
+  .accept-modal-amount { font-size: 36px; font-weight: 700; color: #3fb950; margin-bottom: 10px; }
 </style>
 </head>
 <body>
 
-<!-- LOGIN -->
 <div id="login-screen">
   <div class="login-card">
     <div class="login-logo">
@@ -249,7 +279,6 @@
   </div>
 </div>
 
-<!-- PREDRAFT -->
 <div id="predraft-screen">
   <div class="predraft-logo">🏈 RFA Draft 2025</div>
   <div class="predraft-sub">Restricted Free Agent Auction</div>
@@ -262,7 +291,6 @@
   <div class="online-list" id="online-list"></div>
 </div>
 
-<!-- APP -->
 <div id="app">
   <div class="topbar">
     <div class="topbar-left">
@@ -300,6 +328,7 @@
             <div>
               <div class="timer-countdown" id="timer-display">30</div>
               <div class="timer-label">seconds remaining</div>
+              <div class="accel-badge" id="accel-badge">⚡ 2x SPEED</div>
             </div>
             <div style="text-align:right;">
               <div class="current-bid-amount" id="current-bid-display">$0</div>
@@ -307,6 +336,7 @@
             </div>
           </div>
           <div class="timer-bar"><div class="timer-fill" id="timer-fill" style="width:100%"></div></div>
+          <div class="max-bid-info" id="max-bid-info"></div>
           <div class="bid-controls">
             <input class="bid-input" id="bid-input" type="number" min="1" placeholder="Enter bid $" />
             <button class="bid-btn" id="bid-button" onclick="placeBid()">Bid</button>
@@ -343,6 +373,10 @@
         <div class="nominate-turn" id="nominate-turn-display">Waiting...</div>
         <button class="nominate-btn" id="nominate-btn" onclick="openNomPicker()" disabled>Nominate a player</button>
       </div>
+      <div class="draft-order-section" id="draft-order-section" style="display:none;">
+        <h3>Draft order</h3>
+        <div class="draft-order-list" id="draft-order-list"></div>
+      </div>
       <div class="queue-section">
         <div class="queue-header">
           <h3>Player queue</h3>
@@ -369,7 +403,6 @@
   </div>
 </div>
 
-<!-- MATCH MODAL -->
 <div class="modal-overlay" id="match-modal" style="display:none;">
   <div class="modal-card">
     <h2 id="modal-player-name"></h2>
@@ -384,7 +417,6 @@
   </div>
 </div>
 
-<!-- RAISE MODAL -->
 <div class="modal-overlay" id="raise-modal" style="display:none;">
   <div class="raise-modal-card">
     <h2>⬆️ Raise Your Bid</h2>
@@ -401,7 +433,6 @@
   </div>
 </div>
 
-<!-- NOM PICKER -->
 <div class="nom-picker" id="nom-picker" style="display:none;">
   <div class="nom-picker-card">
     <div class="nom-picker-header">
@@ -414,7 +445,6 @@
   </div>
 </div>
 
-<!-- HISTORY MODAL -->
 <div class="history-overlay" id="history-overlay">
   <div class="history-card">
     <div class="history-header">
@@ -430,78 +460,104 @@ const EMOJI = {QB:'🎯',RB:'🏃',WR:'⚡',TE:'🙌'};
 const TEAM_NAMES = ['Smash','Bryce','JJ','Kevin','Jeremy','Trevor','Tate','Coop','Rando','Zach'];
 
 const socket = io();
+let myTeam = null, myTeamData = null, state = null, history = [], activePos = 'ALL';
+let nomPickerQueue = [];
 
-let myTeam = null;
-let myTeamData = null;
-let state = null;
-let history = [];
-let activePos = 'ALL';
-let nomPickerAll = [];
-
-// ── LOCAL TIMER (mirrors server) ──
-let localTimerInterval = null;
-let localTimerSec = 30;
-let localTimerMax = 30;
-let localTimerPhase = 'bidding';
-
-function startLocalTimer(sec, max, phase) {
-  clearInterval(localTimerInterval);
-  localTimerSec = sec; localTimerMax = max; localTimerPhase = phase;
-  updateLocalTimer();
-  localTimerInterval = setInterval(() => {
-    localTimerSec--;
-    if (localTimerSec < 0) localTimerSec = 0;
-    updateLocalTimer();
-  }, 1000);
+// ── SNAKE HELPERS ──
+function getSnakeTeam(nomOrder, nomIdx) {
+  const n = nomOrder.length;
+  const round = Math.floor(nomIdx / n);
+  const posInRound = nomIdx % n;
+  return round % 2 === 0 ? nomOrder[posInRound] : nomOrder[n - 1 - posInRound];
+}
+function getUpcomingOrder(nomOrder, nomIdx, count) {
+  const result = [];
+  for (let i = nomIdx; i < nomIdx + count; i++) result.push({ team: getSnakeTeam(nomOrder, i), idx: i });
+  return result;
 }
 
-function updateLocalTimer() {
+// ── MAX BID HELPER (mirrors server logic) ──
+function calcMaxBid(s, team) {
+  const budget = s.budgets[team];
+  const openSpots = s.spots[team] - s.acquired[team].length;
+  const mustKeep = Math.max(0, openSpots - 1);
+  return budget - mustKeep;
+}
+
+// ── MOBILE VISIBILITY RESYNC ──
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && myTeam) {
+    socket.emit('resync', myTeam);
+  }
+});
+socket.on('resync_ok', (data) => {
+  state = data.state;
+  history = data.history || [];
+  if (state.started && state.phase !== 'done') {
+    showApp();
+    syncState(state);
+  } else if (!state.started) {
+    showPreDraft();
+  }
+});
+
+// ── TIMER ──
+socket.on('timer_tick', (data) => {
+  updateTimerDisplay(data.timerSec, data.timerMax, data.phase, data.accelerated);
+  if (data.phase === 'raise' || data.phase === 'match') {
+    const countdown = document.getElementById('global-bar-countdown');
+    const fill = document.getElementById('global-bar-fill');
+    if (countdown) { countdown.textContent = data.timerSec; countdown.className = 'global-bar-countdown' + (data.timerSec <= 5 ? ' urgent' : ''); }
+    if (fill) fill.style.width = Math.max(0, (data.timerSec / data.timerMax) * 100) + '%';
+    if (data.phase === 'owner_accept') {
+      const cd = document.getElementById('owner-accept-countdown');
+      const mf = document.getElementById('owner-accept-fill');
+      if (cd) { cd.textContent = data.timerSec; cd.className = 'modal-timer-countdown' + (data.timerSec <= 8 ? ' urgent' : ''); }
+      if (mf) mf.style.width = Math.max(0, (data.timerSec / data.timerMax) * 100) + '%';
+    }
+    if (data.phase === 'match') {
+      const cd = document.getElementById('modal-timer-countdown');
+      const mf = document.getElementById('modal-timer-fill');
+      if (cd) { cd.textContent = data.timerSec; cd.className = 'modal-timer-countdown' + (data.timerSec <= 8 ? ' urgent' : ''); }
+      if (mf) mf.style.width = Math.max(0, (data.timerSec / data.timerMax) * 100) + '%';
+    }
+    if (data.phase === 'raise') {
+      const rd = document.getElementById('raise-timer-countdown');
+      const rf = document.getElementById('raise-timer-fill');
+      if (rd) { rd.textContent = data.timerSec; rd.className = 'raise-timer-countdown' + (data.timerSec <= 5 ? ' urgent' : ''); }
+      if (rf) rf.style.width = Math.max(0, (data.timerSec / data.timerMax) * 100) + '%';
+    }
+  }
+});
+
+function updateTimerDisplay(sec, max, phase, accelerated) {
   const el = document.getElementById('timer-display');
   const fill = document.getElementById('timer-fill');
+  const badge = document.getElementById('accel-badge');
   if (!el) return;
-  el.textContent = localTimerSec;
-  const urgent = localTimerSec <= 8;
-  el.className = 'timer-countdown' + (urgent ? ' urgent' : '');
-  fill.style.width = Math.max(0, (localTimerSec / localTimerMax) * 100) + '%';
-  fill.className = 'timer-fill' + (urgent ? ' urgent' : ' ' + localTimerPhase);
+  el.textContent = sec;
+  const urgent = sec <= 8;
+  el.className = 'timer-countdown' + (accelerated ? ' accelerated' : urgent ? ' urgent' : '');
+  fill.style.width = Math.max(0, (sec / max) * 100) + '%';
+  fill.className = 'timer-fill' + (accelerated ? ' accelerated' : urgent ? ' urgent' : '');
+  if (badge) badge.className = 'accel-badge' + (accelerated ? ' show' : '');
 }
 
-function stopLocalTimer() { clearInterval(localTimerInterval); }
-
-// ── GLOBAL BAR TIMER ──
-let globalBarInterval = null;
-function startGlobalBar(phase, sec, max, who) {
-  clearInterval(globalBarInterval);
+function showGlobalBar(phase, who) {
   const bar = document.getElementById('global-bar');
   const title = document.getElementById('global-bar-title');
   const whoEl = document.getElementById('global-bar-who');
   const fill = document.getElementById('global-bar-fill');
-  const countdown = document.getElementById('global-bar-countdown');
   bar.className = 'global-bar show';
   if (phase === 'raise') {
-    title.className = 'global-bar-title raise';
-    title.textContent = '⬆️ High Bidder Raise Window';
-    whoEl.innerHTML = `<strong>${who}</strong>deciding to raise`;
-    fill.className = 'timer-fill raise';
+    title.className = 'global-bar-title raise'; title.textContent = '⬆️ High Bidder Raise Window';
+    whoEl.innerHTML = `<strong>${who}</strong>deciding to raise`; fill.className = 'timer-fill raise';
   } else {
-    title.className = 'global-bar-title match';
-    title.textContent = '⏳ Owner Match / Pass';
-    whoEl.innerHTML = `<strong>${who}</strong>auto-awards to bidder on timeout`;
-    fill.className = 'timer-fill match';
+    title.className = 'global-bar-title match'; title.textContent = '⏳ Owner Match / Pass';
+    whoEl.innerHTML = `<strong>${who}</strong>auto-awards to bidder on timeout`; fill.className = 'timer-fill match';
   }
-  let s = sec;
-  function tick() {
-    countdown.textContent = s;
-    countdown.className = 'global-bar-countdown' + (s <= 5 ? ' urgent' : '');
-    fill.style.width = Math.max(0, (s / max) * 100) + '%';
-  }
-  tick();
-  globalBarInterval = setInterval(() => { s--; tick(); if (s < 0) clearInterval(globalBarInterval); }, 1000);
 }
-function hideGlobalBar() {
-  clearInterval(globalBarInterval);
-  document.getElementById('global-bar').className = 'global-bar';
-}
+function hideGlobalBar() { document.getElementById('global-bar').className = 'global-bar'; }
 
 // ── LOGIN ──
 function doLogin() {
@@ -513,18 +569,11 @@ function doLogin() {
 }
 document.getElementById('login-input').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
 
-// ── SOCKET EVENTS ──
 socket.on('login_ok', (data) => {
-  myTeamData = data.teamData;
-  state = data.state;
-  history = data.history || [];
+  myTeamData = data.teamData; state = data.state; history = data.history || [];
   document.getElementById('login-screen').style.display = 'none';
-  if (state.started && state.phase !== 'done') {
-    showApp();
-    syncState(state);
-  } else {
-    showPreDraft();
-  }
+  if (state.started && state.phase !== 'done') { showApp(); syncState(state); }
+  else { showPreDraft(); }
 });
 
 socket.on('users_update', (users) => {
@@ -540,7 +589,7 @@ socket.on('draft_started', (data) => {
 
 socket.on('prompt_nomination', (data) => {
   state = data.state;
-  stopLocalTimer(); hideGlobalBar();
+  hideGlobalBar();
   document.getElementById('bid-section').style.display = 'none';
   document.getElementById('bid-history').style.display = 'none';
   document.getElementById('phase-banner').className = 'phase-banner';
@@ -550,7 +599,7 @@ socket.on('prompt_nomination', (data) => {
   document.getElementById('nominate-btn').disabled = !isMe || data.queue.length === 0;
   document.getElementById('player-on-block').innerHTML = `<div class="no-player-up">${isMe ? '👆 Your turn — pick a player to nominate' : `Waiting for ${nomTeam} to nominate...`}</div>`;
   document.getElementById('nominator-info').textContent = '';
-  renderAll(state);
+  renderAll(state); renderDraftOrder(state);
 });
 
 socket.on('auction_start', (data) => {
@@ -569,36 +618,27 @@ socket.on('auction_start', (data) => {
   inp.value = ''; inp.min = player.basePrice; inp.placeholder = `Min $${player.basePrice}`;
   document.getElementById('current-bid-display').textContent = '$' + player.basePrice;
   document.getElementById('current-bidder-display').textContent = 'No bids yet — starts at $' + player.basePrice;
-  hideGlobalBar();
-  startLocalTimer(30, 30, 'bidding');
-  renderAll(state);
-});
-
-socket.on('timer_tick', (data) => {
-  startLocalTimer(data.timerSec, data.timerMax, data.phase);
-  // Also update global bar if in raise/match
-  if (data.phase === 'raise' || data.phase === 'match') {
-    const countdown = document.getElementById('global-bar-countdown');
-    const fill = document.getElementById('global-bar-fill');
-    if (countdown) {
-      countdown.textContent = data.timerSec;
-      countdown.className = 'global-bar-countdown' + (data.timerSec <= 5 ? ' urgent' : '');
-    }
-    if (fill) fill.style.width = Math.max(0, (data.timerSec / data.timerMax) * 100) + '%';
+  // Show max bid info
+  if (state && player.owner !== myTeam) {
+    const cap = calcMaxBid(state, myTeam);
+    document.getElementById('max-bid-info').innerHTML = `Your max bid: <span>$${cap}</span>`;
+  } else {
+    document.getElementById('max-bid-info').textContent = '';
   }
+  hideGlobalBar(); renderAll(state); renderDraftOrder(state);
 });
 
 socket.on('bid_placed', (data) => {
   document.getElementById('current-bid-display').textContent = '$' + data.amount;
   document.getElementById('current-bidder-display').innerHTML = `High bidder: <strong>${data.team}</strong>`;
   renderBidHistory(data.bidHistory);
-  state.budgets = data.budgets;
+  if (state) state.budgets = data.budgets;
   renderTeams(state);
-  startLocalTimer(data.timerSec, data.timerMax, 'bidding');
 });
 
 socket.on('bid_error', (msg) => {
   document.getElementById('bid-error').textContent = msg;
+  document.getElementById('raise-err').textContent = msg;
 });
 
 socket.on('raise_phase', (data) => {
@@ -606,7 +646,7 @@ socket.on('raise_phase', (data) => {
   setBanner('raise', '⬆️ High Bidder Raise Window');
   document.getElementById('bid-section').style.display = 'none';
   renderPlayerBlock(data.state.cur);
-  startGlobalBar('raise', 15, 15, data.curBidder);
+  showGlobalBar('raise', data.curBidder);
   if (myTeam === data.curBidder) {
     document.getElementById('raise-current-bid').textContent = 'Current high: $' + data.curBid;
     document.getElementById('raise-input').value = '';
@@ -617,9 +657,7 @@ socket.on('raise_phase', (data) => {
   }
 });
 
-socket.on('raise_expired', () => {
-  document.getElementById('raise-modal').style.display = 'none';
-});
+socket.on('raise_expired', () => { document.getElementById('raise-modal').style.display = 'none'; });
 
 socket.on('match_phase', (data) => {
   state = data.state;
@@ -627,40 +665,37 @@ socket.on('match_phase', (data) => {
   document.getElementById('raise-modal').style.display = 'none';
   document.getElementById('bid-section').style.display = 'none';
   renderPlayerBlock(data.cur);
-  startGlobalBar('match', 30, 30, data.cur.owner);
+  showGlobalBar('match', data.cur.owner);
   if (myTeam === data.cur.owner) {
     document.getElementById('modal-player-name').textContent = data.cur.name;
     document.getElementById('modal-bid-amount').textContent = '$' + data.curBid;
     document.getElementById('match-modal').style.display = 'flex';
-    // local countdown in modal
-    let s = 30;
-    const cd = document.getElementById('modal-timer-countdown');
-    const fill = document.getElementById('modal-timer-fill');
-    function tick() { cd.textContent = s; cd.className = 'modal-timer-countdown' + (s <= 8 ? ' urgent' : ''); fill.style.width = Math.max(0, (s/30)*100) + '%'; }
-    tick();
-    const mi = setInterval(() => { s--; tick(); if (s <= 0) clearInterval(mi); }, 1000);
   } else {
     document.getElementById('player-on-block').innerHTML = `<div class="no-player-up"><div>⏳ <strong>${data.cur.owner}</strong> deciding at <strong style="color:#3fb950;">$${data.curBid}</strong></div><div style="font-size:12px;color:#8b949e;">Auto-awards to ${data.curBidder} if no decision</div></div>`;
   }
 });
 
-socket.on('match_expired', () => {
+socket.on('match_expired', () => { document.getElementById('match-modal').style.display = 'none'; });
+
+socket.on('match_auto_passed', (data) => {
   document.getElementById('match-modal').style.display = 'none';
+  hideGlobalBar();
+  document.getElementById('player-on-block').innerHTML = `<div class="no-player-up"><div>💸 ${data.reason} — auto-awarding to ${data.curBidder}</div></div>`;
 });
 
 socket.on('player_finalized', (data) => {
   state = data.state;
   document.getElementById('match-modal').style.display = 'none';
   document.getElementById('raise-modal').style.display = 'none';
+  document.getElementById('owner-accept-modal').style.display = 'none';
   hideGlobalBar();
   document.getElementById('phase-banner').className = 'phase-banner';
   renderAll(state);
 });
 
 socket.on('draft_complete', (data) => {
-  state = data.state;
-  history = data.history;
-  stopLocalTimer(); hideGlobalBar();
+  state = data.state; history = data.history;
+  hideGlobalBar();
   document.getElementById('match-modal').style.display = 'none';
   document.getElementById('raise-modal').style.display = 'none';
   document.getElementById('player-on-block').innerHTML = '<div class="no-player-up">🎉 Draft complete! Check history for results.</div>';
@@ -673,9 +708,8 @@ socket.on('draft_complete', (data) => {
 });
 
 socket.on('draft_reset', (data) => {
-  state = data.state;
-  history = data.history;
-  stopLocalTimer(); hideGlobalBar();
+  state = data.state; history = data.history;
+  hideGlobalBar();
   document.getElementById('match-modal').style.display = 'none';
   document.getElementById('raise-modal').style.display = 'none';
   document.getElementById('phase-banner').className = 'phase-banner';
@@ -685,14 +719,15 @@ socket.on('draft_reset', (data) => {
   document.getElementById('nominate-turn-display').textContent = 'Waiting...';
   document.getElementById('nominate-btn').disabled = true;
   document.getElementById('nominator-info').textContent = '';
+  document.getElementById('draft-order-section').style.display = 'none';
   showPreDraft();
 });
 
-socket.on('paused', () => { setBanner('bidding', '⏸ Draft Paused'); });
-socket.on('resumed', () => { setBanner('bidding', '🔥 Bidding Open'); });
+socket.on('paused', () => setBanner('bidding', '⏸ Draft Paused'));
+socket.on('resumed', () => setBanner('bidding', '🔥 Bidding Open'));
 socket.on('player_skipped', (data) => { state = data.state; renderAll(state); });
 
-// ── UI HELPERS ──
+// ── UI ──
 function showPreDraft() {
   document.getElementById('app').style.display = 'none';
   document.getElementById('predraft-screen').style.display = 'flex';
@@ -700,7 +735,7 @@ function showPreDraft() {
   document.getElementById('predraft-team-name').textContent = myTeam + "'s Team";
   document.getElementById('predraft-budget').textContent = '$' + myTeamData.budget + ' budget';
   document.getElementById('predraft-spots').textContent = myTeamData.spots + ' roster spots available';
-  const byPos = {QB:[],RB:[],WR:[],TE:[]};
+  const byPos = {};
   myTeamData.players.forEach(p => { (byPos[p.pos] = byPos[p.pos]||[]).push(p); });
   let html = '';
   ['QB','RB','WR','TE'].forEach(pos => {
@@ -710,8 +745,7 @@ function showPreDraft() {
     }
   });
   document.getElementById('predraft-roster').innerHTML = '<h3>Your RFA players</h3>' + (html||'<div style="color:#8b949e;font-size:13px;">No RFA players</div>');
-  const isComm = myTeamData.commissioner;
-  document.getElementById('start-area').innerHTML = isComm
+  document.getElementById('start-area').innerHTML = myTeamData.commissioner
     ? '<button class="start-btn" onclick="socket.emit(\'start_draft\')">🚀 Start draft</button>'
     : '<div style="color:#8b949e;font-size:14px;margin-top:1rem;">⏳ Waiting for commissioner to start...</div>';
 }
@@ -724,8 +758,7 @@ function showApp() {
 }
 
 function syncState(s) {
-  state = s;
-  renderAll(s);
+  state = s; renderAll(s); renderDraftOrder(s);
   if (s.cur) renderPlayerBlock(s.cur);
   if (s.phase === 'bidding') {
     document.getElementById('bid-section').style.display = 'block';
@@ -734,8 +767,35 @@ function syncState(s) {
     renderBidHistory(s.bidHistory);
     document.getElementById('current-bid-display').textContent = '$' + s.curBid;
     document.getElementById('current-bidder-display').innerHTML = s.curBidder ? `High bidder: <strong>${s.curBidder}</strong>` : 'No bids yet';
-    startLocalTimer(s.timerSec, s.timerMax, 'bidding');
+    if (s.cur && s.cur.owner !== myTeam) {
+      const cap = calcMaxBid(s, myTeam);
+      document.getElementById('max-bid-info').innerHTML = `Your max bid: <span>$${cap}</span>`;
+    }
   }
+  if (s.phase === 'raise') showGlobalBar('raise', s.curBidder);
+  if (s.phase === 'match') showGlobalBar('match', s.cur?.owner);
+}
+
+function renderDraftOrder(s) {
+  if (!s || !s.nomOrder || !s.nomOrder.length) return;
+  const section = document.getElementById('draft-order-section');
+  section.style.display = 'block';
+  const upcoming = getUpcomingOrder(s.nomOrder, s.nomIdx, 6);
+  const n = s.nomOrder.length;
+  let html = '', lastRound = -1;
+  upcoming.forEach((item, i) => {
+    const round = Math.floor(item.idx / n) + 1;
+    if (round !== lastRound) {
+      const dir = round % 2 === 1 ? '10→1' : '1→10';
+      html += `<div class="round-label">Round ${round} (${dir})</div>`;
+      lastRound = round;
+    }
+    const isCurrent = i === 0, isNext = i === 1;
+    const cls = isCurrent ? 'draft-order-item current' : isNext ? 'draft-order-item next' : 'draft-order-item';
+    const badge = isCurrent ? '<span class="draft-order-badge now">NOW</span>' : isNext ? '<span class="draft-order-badge next">NEXT</span>' : '';
+    html += `<div class="${cls}"><span class="draft-order-num">${item.idx + 1}</span><span class="draft-order-name">${item.team}</span>${badge}</div>`;
+  });
+  document.getElementById('draft-order-list').innerHTML = html;
 }
 
 function renderPlayerBlock(p) {
@@ -790,7 +850,6 @@ function commReset() {
   }
 }
 
-let nomPickerQueue = [];
 function openNomPicker() {
   if (!state) return;
   const myP = state.queue.filter(p => p.owner === myTeam);
@@ -834,11 +893,11 @@ function renderAll(s) {
   document.getElementById('topbar-budget').textContent = '$' + s.budgets[myTeam];
   const sl = spotsLeft(s, myTeam);
   const sb = document.getElementById('topbar-spots');
-  sb.textContent = sl + ' spots';
-  sb.className = 'spots-badge' + (sl === 0 ? ' full' : '');
+  sb.textContent = sl + ' spots'; sb.className = 'spots-badge' + (sl === 0 ? ' full' : '');
 }
 
 function renderTeams(s) {
+  if (!s) return;
   document.getElementById('teams-list').innerHTML = Object.keys(s.budgets).map(t => {
     const isActive = s.curBidder === t, isOwner = s.cur?.owner === t;
     let cls = 'team-row';
@@ -846,9 +905,14 @@ function renderTeams(s) {
     const sl = spotsLeft(s, t);
     return `<div class="${cls}"><span class="team-row-name">${t}</span><span class="team-row-budget">$${s.budgets[t]}</span><span class="team-row-spots">${sl}sp</span></div>`;
   }).join('');
+  document.getElementById('topbar-budget').textContent = '$' + s.budgets[myTeam];
+  const sl = spotsLeft(s, myTeam);
+  const sb = document.getElementById('topbar-spots');
+  sb.textContent = sl + ' spots'; sb.className = 'spots-badge' + (sl === 0 ? ' full' : '');
 }
 
 function renderQueue(s) {
+  if (!s) return;
   const filtered = activePos === 'ALL' ? s.queue : s.queue.filter(p => p.pos === activePos);
   document.getElementById('queue-count-badge').textContent = s.queue.length + ' remaining';
   document.getElementById('queue-list').innerHTML = filtered.length
@@ -857,6 +921,7 @@ function renderQueue(s) {
 }
 
 function renderCompleted(s) {
+  if (!s) return;
   document.getElementById('completed-list').innerHTML = s.completed.length
     ? s.completed.slice().reverse().map(c => c.signed
         ? `<div class="completed-item"><span class="completed-player">${c.player}</span><span class="completed-result signed">${c.winner} — $${c.amount}</span></div>`
@@ -866,6 +931,7 @@ function renderCompleted(s) {
 }
 
 function renderAcquired(s) {
+  if (!s) return;
   const my = s.acquired[myTeam] || [];
   document.getElementById('acquired-list').innerHTML = my.length
     ? my.map(a => `<div class="completed-item"><span class="completed-player">${a.player} <span class="pos-badge pos-${a.pos}" style="font-size:10px;">${a.pos}</span></span><span class="completed-result signed">$${a.amount}</span></div>`).join('')
@@ -896,14 +962,26 @@ function showHistory() {
         ? `<div class="history-result"><span class="history-result-player">${c.player}</span><span class="history-result-winner">${c.winner} — $${c.amount}</span></div>`
         : `<div class="history-result"><span class="history-result-player">${c.player}</span><span class="history-result-ns">Not Signed</span></div>`
       ).join('');
-      return `<div class="history-draft">
-        <div class="history-draft-title">Draft ${history.length - i}<span>${draft.date}</span></div>
-        ${results}
-      </div>`;
+      return `<div class="history-draft"><div class="history-draft-title">Draft ${history.length - i}<span>${draft.date}</span></div>${results}</div>`;
     }).join('');
   }
   document.getElementById('history-overlay').classList.add('show');
 }
 </script>
+
+<!-- Owner Accept Modal -->
+<div class="modal-overlay" id="owner-accept-modal" style="display:none;">
+  <div class="accept-modal-card">
+    <h2>🔒 No Bids Placed</h2>
+    <p id="owner-accept-desc">Nobody bid on your player. Accept them at their base contract price or release them.</p>
+    <div class="accept-modal-amount" id="owner-accept-price"></div>
+    <div class="modal-timer-countdown" id="owner-accept-countdown">30</div>
+    <div class="modal-timer-bar"><div class="modal-timer-fill" id="owner-accept-fill" style="width:100%;background:#3fb950;"></div></div>
+    <div class="modal-btns" style="margin-top:1rem;">
+      <button class="modal-btn-match" onclick="socket.emit('owner_accept_decision', true)">✅ Accept at base price</button>
+      <button class="modal-btn-pass" onclick="socket.emit('owner_accept_decision', false)">❌ Release — Not Signed</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
