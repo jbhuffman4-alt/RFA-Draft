@@ -202,16 +202,17 @@ function startRaisePhase() {
 
 function proceedToOwnerDecision() {
   G.phase = 'match';
-  // Check if owner can actually afford to match
   const owner = G.cur.owner;
-  const canAfford = G.budgets[owner] >= G.curBid;
-  if (!canAfford) {
-    // Owner can't afford it — auto-pass to bidder
-    broadcast('match_auto_passed', { reason: `${owner} can't afford $${G.curBid}`, cur: G.cur, curBid: G.curBid, curBidder: G.curBidder });
+  // Cap: budget minus $1 for each OTHER open spot (matching fills one spot)
+  const openSpots = G.spots[owner] - G.acquired[owner].length;
+  const otherOpenSpots = Math.max(0, openSpots - 1);
+  const maxMatch = G.budgets[owner] - otherOpenSpots;
+  if (G.curBid > maxMatch) {
+    broadcast('match_auto_passed', { reason: `${owner} can't afford to match $${G.curBid} (max $${maxMatch})`, cur: G.cur, curBid: G.curBid, curBidder: G.curBidder });
     finalizePlayer(G.cur, G.curBidder, G.curBid);
     return;
   }
-  broadcast('match_phase', { cur: G.cur, curBid: G.curBid, curBidder: G.curBidder, state: getPublicState() });
+  broadcast('match_phase', { cur: G.cur, curBid: G.curBid, curBidder: G.curBidder, maxMatch, state: getPublicState() });
   startTimer(30, () => { broadcast('match_expired', {}); finalizePlayer(G.cur, G.curBidder, G.curBid); });
 }
 
@@ -327,10 +328,17 @@ io.on('connection', (socket) => {
     const team = connectedUsers[socket.id];
     if (team !== G.cur.owner) return;
     if (match) {
-      // Double-check they can afford it
-      if (G.budgets[team] < G.curBid) {
-        socket.emit('bid_error', `You can't afford $${G.curBid}. Auto-passing.`);
+      // Check they can afford it while keeping $1 per remaining open spot
+      // Matching keeps the player so open spots stays the same (no new spot used)
+      // But they still need $1 per OTHER open spot after this purchase
+      const openSpots = G.spots[team] - G.acquired[team].length;
+      const otherOpenSpots = Math.max(0, openSpots - 1); // -1 because this player fills one
+      const mustKeep = otherOpenSpots;
+      const maxMatch = G.budgets[team] - mustKeep;
+      if (G.curBid > maxMatch) {
+        socket.emit('bid_error', `You can't match $${G.curBid} — max you can spend is $${maxMatch} (need $1 for each other open spot). Auto-passing.`);
         stopTimer();
+        broadcast('match_auto_passed', { reason: `${team} can't afford to match $${G.curBid} (max $${maxMatch})`, cur: G.cur, curBid: G.curBid, curBidder: G.curBidder });
         finalizePlayer(G.cur, G.curBidder, G.curBid);
         return;
       }
